@@ -7,7 +7,6 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Callable, Sequence
 
-
 import matplotlib.pyplot as plt
 
 ##################################################
@@ -21,6 +20,26 @@ def finalize_animation_scene(
     finalize_func: Callable[[AnimationScene], None] | None,
     active_error: BaseException | None,
 ) -> None:
+    """
+    Finalize and close an animation scene while preserving active failures.
+
+    Runs the optional user finalizer and closes the Matplotlib figure. Cleanup
+    failures are raised only when no earlier rendering error is already active.
+
+    Parameters
+    ----------
+    scene : AnimationScene
+        Scene to finalize and close.
+    finalize_func : Callable[[AnimationScene], None] | None
+        Optional user cleanup callback.
+    active_error : BaseException | None
+        Exception already being propagated from rendering, if any.
+
+    Raises
+    ------
+    BaseException
+        If cleanup fails and no earlier exception is active.
+    """
     cleanup_errors: list[BaseException] = []
 
     if finalize_func is not None:
@@ -52,6 +71,31 @@ def render_animation_chunk(
     chunk: RenderChunk[FrameT], 
     progress: queue.Queue | _LocalProgress
 ) -> tuple[int, Path]:
+    """
+    Render one contiguous frame chunk using a worker-local scene.
+
+    Creates one scene, renders all frames through the chunk writer, reports
+    progress after each frame, then finalizes the scene.
+
+    Parameters
+    ----------
+    job : AnimationJob[FrameT]
+        Scene callbacks and writer configuration.
+    chunk : RenderChunk[FrameT]
+        Frames and output path assigned to this worker.
+    progress : queue.Queue | _LocalProgress
+        Progress sink receiving one completion event per frame.
+
+    Returns
+    -------
+    tuple[int, Path]
+        Chunk index and rendered output path.
+
+    Raises
+    ------
+    BaseException
+        Propagates initialization, rendering, writing, or cleanup failures.
+    """
     
     scene: AnimationScene | None = None
     active_error: BaseException | None = None
@@ -81,6 +125,31 @@ def wait_for_workers(
     progress_queue: queue.Queue,
     total_frames: int,
 ) -> list[tuple[int, Path]]:
+    """
+    Wait for worker completion while displaying aggregate render progress.
+
+    Polls progress events and completed futures until all workers finish,
+    propagating worker exceptions and returning results in chunk order.
+
+    Parameters
+    ----------
+    futures : Sequence[Future[tuple[int, Path]]]
+        Worker futures producing chunk index and output path pairs.
+    progress_queue : queue.Queue
+        Queue receiving completed-frame counts from workers.
+    total_frames : int
+        Total number of frames across all chunks.
+
+    Returns
+    -------
+    list[tuple[int, Path]]
+        Completed chunk results sorted by chunk index.
+
+    Raises
+    ------
+    BaseException
+        Propagates exceptions raised by worker futures.
+    """
     
     pending = set(futures)
     completed_frames = 0

@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Generic, Iterable
+from typing import Any, Callable, Generic, Iterable
 
 ##################################################
 from .scene import AnimationScene
@@ -16,17 +16,29 @@ from .worker_helpers import render_animation_chunk, wait_for_workers
 from .types import FrameT, ParallelConfig, RenderChunk, SaveResult, AnimationJob
 
 
-from .writers import AnimationWriter, Mp4Writer, PdfWriter, make_writer, WRITERS
+from .writers import AnimationWriter, make_writer, WRITERS
 
 class ParallelAnimation(Generic[FrameT]):
     """
-    Render a finite sequence of frames using worker-local animation scenes.
+    Render a finite frame sequence using worker-local animation scenes.
 
-    Each worker creates one scene and reuses it for every frame in its
-    contiguous frame chunk.
+    Frames are divided into contiguous chunks. Each worker creates one scene,
+    reuses it for its chunk, and writes an intermediate file that is later
+    combined by the selected writer.
+
+    Parameters
+    ----------
+    frames : Iterable[FrameT]
+        Frame values passed to ``func``.
+    init_func : Callable[[], AnimationScene]
+        Creates a worker-local animation scene.
+    func : Callable[[FrameT, AnimationScene], None]
+        Updates the scene for one frame.
+    finalize_func : Callable[[AnimationScene], None] | None, optional
+        Finalizes a worker scene after its chunk is rendered.
+    config : ParallelConfig | None, optional
+        Parallel rendering configuration. Uses defaults when omitted.
     """
-
-    _writer_registry: ClassVar[ dict[str, Callable[..., Any]] ] = {}
 
     def __init__(self,
         frames: Iterable[FrameT],
@@ -36,6 +48,15 @@ class ParallelAnimation(Generic[FrameT]):
         finalize_func: Callable[[AnimationScene], None] | None = None,
         config: ParallelConfig | None = None
     ) -> None:
+        """
+        Initialize an animation render job.
+
+        Raises
+        ------
+        TypeError
+            If ``init_func``, ``func``, or a provided ``finalize_func`` is not
+            callable.
+        """
         if not callable(init_func):
             raise TypeError("init_func must be callable")
 
@@ -55,15 +76,30 @@ class ParallelAnimation(Generic[FrameT]):
 
     @property
     def config(self) -> ParallelConfig:
+        """
+        Return the rendering configuration.
+
+        Returns
+        -------
+        ParallelConfig
+            Configuration used for rendering.
+        """
         return self._config
 
     @property
     def frames(self) -> tuple[FrameT, ...]:
         """
-        Materialize and cache the frame iterable.
+        Materialize and cache the input frame iterable.
 
-        This allows one animation to be saved multiple times even when its
-        original frame source was a generator.
+        Returns
+        -------
+        tuple[FrameT, ...]
+            Cached frame sequence.
+
+        Raises
+        ------
+        ValueError
+            If the frame iterable is empty.
         """
         if self._frames is None:
             self._frames = tuple(self._frame_source)
@@ -77,10 +113,30 @@ class ParallelAnimation(Generic[FrameT]):
 
     def save(self, output_path: str | Path, *, writer: Any | None = None, **writer_options: Any) -> SaveResult:
         """
-        Render the animation and save it through an explicit or inferred writer.
+        Render the animation and save the combined output.
 
-        If writer is omitted, its type is inferred from output_path's suffix.
-        Writer options are passed to the registered writer factory.
+        The writer is inferred from the output extension unless explicitly
+        provided. Rendering occurs in temporary chunk files and the requested
+        output path is replaced only after successful completion.
+
+        Parameters
+        ----------
+        output_path : str | Path
+            Destination file path.
+        writer : AnimationWriter | None, optional
+            Explicit writer. If omitted, one is selected from ``WRITERS``.
+        **writer_options : Any
+            Options passed to the inferred writer factory.
+
+        Returns
+        -------
+        SaveResult
+            Output path, frame count, worker count, and elapsed render time.
+
+        Raises
+        ------
+        ValueError
+            If no writer is registered for the output extension.
         """
         output_path = Path(output_path).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +184,28 @@ class ParallelAnimation(Generic[FrameT]):
         writer: AnimationWriter | None,
         writer_options: dict[str, Any]
     )-> AnimationWriter:
+        """
+        Select an explicit writer or construct one from the file extension.
+
+        Parameters
+        ----------
+        output_path : Path
+            Destination path used for extension inference.
+        writer : AnimationWriter | None
+            Explicit writer, or ``None`` to infer one.
+        writer_options : dict[str, Any]
+            Options passed to the inferred writer factory.
+
+        Returns
+        -------
+        AnimationWriter
+            Writer used for rendering and chunk combination.
+
+        Raises
+        ------
+        ValueError
+            If no writer is registered for the output extension.
+        """
         
         if writer is not None:
             return writer
@@ -148,6 +226,25 @@ class ParallelAnimation(Generic[FrameT]):
         temporary_directory: Path,
         chunk_suffix: str,
     ) -> list[RenderChunk[FrameT]]:
+        """
+        Divide frames into approximately equal contiguous worker chunks.
+
+        Parameters
+        ----------
+        frames : tuple[FrameT, ...]
+            Frames to partition.
+        worker_count : int
+            Number of chunks to create.
+        temporary_directory : Path
+            Directory for chunk output files.
+        chunk_suffix : str
+            File suffix used for each chunk.
+
+        Returns
+        -------
+        list[RenderChunk[FrameT]]
+            Ordered render chunks with frame subsets and output paths.
+        """
         
         quotient, remainder = divmod(len(frames), worker_count)
 
@@ -169,7 +266,28 @@ class ParallelAnimation(Generic[FrameT]):
         chunks: list[RenderChunk[FrameT]],
         worker_count: int,
     ) -> list[tuple[int, Path]]:
-        
+        """
+        Render all frame chunks locally or with worker processes.
+
+        Parameters
+        ----------
+        job : AnimationJob[FrameT]
+            Scene callbacks and writer configuration for each worker.
+        chunks : list[RenderChunk[FrameT]]
+            Frame chunks to render.
+        worker_count : int
+            Number of worker processes.
+
+        Returns
+        -------
+        list[tuple[int, Path]]
+            ``(chunk_index, output_path)`` pairs for completed chunks.
+
+        Raises
+        ------
+        BaseException
+            Re-raises worker failures after cancelling unfinished futures.
+        """
         total_frames = sum(len(chunk.frames) for chunk in chunks)
         
         if worker_count == 1:
@@ -198,6 +316,24 @@ class ParallelAnimation(Generic[FrameT]):
 
     @staticmethod
     def _normalize_extension(extension: str) -> str:
+        """
+        Normalize a file extension to lowercase ``.suffix`` form.
+
+        Parameters
+        ----------
+        extension : str
+            Extension with or without a leading period.
+
+        Returns
+        -------
+        str
+            Normalized extension.
+
+        Raises
+        ------
+        ValueError
+            If ``extension`` is empty or whitespace.
+        """
         extension = extension.strip().lower()
 
         if not extension:
@@ -210,6 +346,23 @@ class ParallelAnimation(Generic[FrameT]):
 
     @staticmethod
     def _create_staging_path(output_path: Path) -> Path:
+        """
+        Reserve a unique staging path beside the final output file.
+
+        The temporary file created by ``mkstemp`` is immediately removed so the
+        writer receives a nonexistent path while retaining a collision-safe name.
+
+        Parameters
+        ----------
+        output_path : Path
+            Final output path.
+
+        Returns
+        -------
+        Path
+            Unique nonexistent path in the output directory.
+        """
+        
         descriptor, staging_name = mkstemp(
             prefix=f".{output_path.stem}_",
             suffix=output_path.suffix,
