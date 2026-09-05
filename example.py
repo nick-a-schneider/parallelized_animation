@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 
-from animate import AnimationScene, ParallelAnimation, ParallelConfig
+from animate import AnimationScene, ParallelAnimation, RenderConfig
 
 
 @dataclass(frozen=True)
@@ -59,17 +59,13 @@ def main() -> None:
     animation = ParallelAnimation(
         frames=range(frames),
         init_func=initialize_wave,
-        func=update_wave,
-        config=ParallelConfig(workers=2),
+        func=update_wave
     )
-
-    result = animation.save(
-        Path("wave.mp4"),
-        fps=12,
-        dpi=90,
-    )
-
-    print(result)
+    render_res = animation.render(dpi=90, worker_count=2)
+    print(render_res)
+    
+    save_res = animation.save(Path("wave.pdf"), fps=12)
+    # print(save_res)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from typing import Any, TypeVar, cast
 
 WRITERS: dict[str, type[AnimationWriter]] = {
     '.mp4' : Mp4Writer,
-    # '.pdf': PdfWriter # broken :(
+    '.pdf': PdfWriter # broken :(
 }
 
 W = TypeVar("W", bound=AnimationWriter)

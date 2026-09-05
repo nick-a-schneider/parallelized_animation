@@ -5,16 +5,16 @@ import queue
 
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence, Protocol
 
 import matplotlib.pyplot as plt
 
 ##################################################
 from .scene import AnimationScene
 from .progress import _LocalProgress, print_status
-from .types import FrameT, RenderChunk, AnimationJob
+from .types import FrameT, RenderChunk, AnimationJob, ProgressSink, ProgressQueue
 
-
+        
 def finalize_animation_scene(
     scene: AnimationScene,
     finalize_func: Callable[[AnimationScene], None] | None,
@@ -69,27 +69,28 @@ def finalize_animation_scene(
 def render_animation_chunk(
     job: AnimationJob[FrameT], 
     chunk: RenderChunk[FrameT], 
-    progress: queue.Queue | _LocalProgress
-) -> tuple[int, Path]:
+    progress: ProgressSink,
+) -> int:
     """
-    Render one contiguous frame chunk using a worker-local scene.
+    Render one contiguous frame chunk to independent PNG files.
 
-    Creates one scene, renders all frames through the chunk writer, reports
-    progress after each frame, then finalizes the scene.
+    Creates one worker-local scene, renders each assigned frame to a
+    deterministically named PNG file, reports progress after each frame,
+    then finalizes the scene.
 
     Parameters
     ----------
     job : AnimationJob[FrameT]
-        Scene callbacks and writer configuration.
+        Scene initialization, update, and finalization callbacks.
     chunk : RenderChunk[FrameT]
-        Frames and output path assigned to this worker.
-    progress : queue.Queue | _LocalProgress
+        Contiguous subset of frames assigned to this task.
+    progress : ProgressSink
         Progress sink receiving one completion event per frame.
 
     Returns
     -------
-    tuple[int, Path]
-        Chunk index and rendered output path.
+    int
+        Index of the completed render chunk.
 
     Raises
     ------
@@ -103,11 +104,15 @@ def render_animation_chunk(
     try:
         scene = job.init_func()
 
-        with job.writer.open_chunk(chunk.output_path, scene) as chunk_writer:
-            for frame in chunk.frames:
-                job.func(frame, scene)
-                chunk_writer.write_frame(scene)
-                progress.put(1)
+        for offset, frame in enumerate(chunk.frames):
+            frame_index = chunk.start + offset
+            frame_path = chunk.output_directory / f"frame_{frame_index:08d}.png"
+
+            job.func(frame, scene)
+
+            scene.figure.savefig(frame_path, format="png", dpi=job.config.dpi)
+
+            progress.put(1)
 
     except BaseException as error:
         active_error = error
@@ -117,33 +122,33 @@ def render_animation_chunk(
         if scene is not None:
             finalize_animation_scene(scene, job.finalize_func, active_error)
 
-    return chunk.index, chunk.output_path
+    return chunk.index
 
 
 def wait_for_workers(
-    futures: Sequence[Future[tuple[int, Path]]],
-    progress_queue: queue.Queue,
+    futures: Sequence[Future[int]],
+    progress_queue: ProgressQueue,
     total_frames: int,
-) -> list[tuple[int, Path]]:
+) -> list[int]:
     """
     Wait for worker completion while displaying aggregate render progress.
 
     Polls progress events and completed futures until all workers finish,
-    propagating worker exceptions and returning results in chunk order.
+    propagating worker exceptions and returning completed chunk indices.
 
     Parameters
     ----------
-    futures : Sequence[Future[tuple[int, Path]]]
-        Worker futures producing chunk index and output path pairs.
-    progress_queue : queue.Queue
+    futures : Sequence[Future[int]]
+        Worker futures producing completed chunk indices.
+    progress_queue : ProgressQueue
         Queue receiving completed-frame counts from workers.
     total_frames : int
         Total number of frames across all chunks.
 
     Returns
     -------
-    list[tuple[int, Path]]
-        Completed chunk results sorted by chunk index.
+    list[int]
+        Completed chunk indices in ascending order.
 
     Raises
     ------
@@ -153,7 +158,7 @@ def wait_for_workers(
     
     pending = set(futures)
     completed_frames = 0
-    results: list[tuple[int, Path]] = []
+    results: list[int] = []
     started_at = time.perf_counter()
 
     try:
@@ -188,4 +193,4 @@ def wait_for_workers(
     finally:
         print()
 
-    return sorted( results, key=lambda result: result[0])
+    return sorted(results)

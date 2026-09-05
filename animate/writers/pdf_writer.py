@@ -4,58 +4,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from matplotlib.backends.backend_pdf import PdfPages
+from typing import Sequence
 
-from ..scene import AnimationScene
-from .base_writer import AnimationChunkWriter, AnimationWriter
+from PIL import Image
+
+from .base_writer import AnimationWriter
+
 
 @dataclass(frozen=True)
 class PdfWriter(AnimationWriter):
-    dpi: int = 150
-    supports_parallel = False
 
-    def __post_init__(self) -> None:
-        if self.dpi < 1:
-            raise ValueError("dpi must be at least 1")
+    def save_frames(
+        self,
+        frame_paths: Sequence[Path],
+        output_path: Path,
+        temporary_directory: Path,
+    ) -> None:
+        if not frame_paths:
+            raise ValueError("Cannot save an animation with no rendered frames")
 
-    @property
-    def chunk_suffix(self) -> str:
-        return ".pdf"
-
-    def open_chunk(self, output_path: Path, scene: AnimationScene) -> AnimationChunkWriter:
-        return PdfChunkWriter(output_path=output_path, scene=scene, dpi=self.dpi)
-
-class PdfChunkWriter(AnimationChunkWriter):
-    def __init__(self, output_path: Path, scene: AnimationScene, dpi: int) -> None:
-        self.scene = scene
-        self.dpi = dpi
-        self.pdf = PdfPages(output_path)
-        self._finished = False
-
-    def write_frame(self, scene: AnimationScene) -> None:
-        if self._finished:
-            raise RuntimeError("Cannot write to a finished PDF")
-
-        if scene is not self.scene:
-            raise ValueError("PDF writer received a different scene")
-
-        self.pdf.savefig(scene.figure, dpi=self.dpi)
-
-    def finish(self) -> None:
-        if self._finished:
-            return
+        images: list[Image.Image] = []
 
         try:
-            self.pdf.close()
-        finally:
-            self._finished = True
+            for frame_path in frame_paths:
+                image = Image.open(frame_path).convert("RGB")
+                images.append(image)
 
-    def abort(self) -> None:
-        if self._finished:
-            return
-        try:
-            self.pdf.close()
-        except BaseException:
-            pass
+            first, *rest = images
+
+            first.save(
+                output_path,
+                format="PDF",
+                save_all=True,
+                append_images=rest,
+            )
+
         finally:
-            self._finished = True
+            for image in images:
+                image.close()

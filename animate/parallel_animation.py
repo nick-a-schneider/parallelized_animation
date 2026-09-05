@@ -13,7 +13,7 @@ from typing import Any, Callable, Generic, Iterable
 from .scene import AnimationScene
 from .progress import _LocalProgress
 from .worker_helpers import render_animation_chunk, wait_for_workers
-from .types import FrameT, ParallelConfig, RenderChunk, SaveResult, AnimationJob
+from .types import FrameT, RenderConfig, RenderChunk, AnimationResult, AnimationJob
 
 
 from .writers import AnimationWriter, make_writer, WRITERS
@@ -45,8 +45,7 @@ class ParallelAnimation(Generic[FrameT]):
         init_func: Callable[[], AnimationScene],
         func: Callable[[FrameT, AnimationScene], None],
         *,
-        finalize_func: Callable[[AnimationScene], None] | None = None,
-        config: ParallelConfig | None = None
+        finalize_func: Callable[[AnimationScene], None] | None = None
     ) -> None:
         """
         Initialize an animation render job.
@@ -70,21 +69,13 @@ class ParallelAnimation(Generic[FrameT]):
         self._init_func = init_func
         self._func = func
         self._finalize_func = finalize_func
-        self._config = config or ParallelConfig()
-
         self._frames: tuple[FrameT, ...] | None = None
-
-    @property
-    def config(self) -> ParallelConfig:
-        """
-        Return the rendering configuration.
-
-        Returns
-        -------
-        ParallelConfig
-            Configuration used for rendering.
-        """
-        return self._config
+        
+        
+        self._temporary_directory: TemporaryDirectory | None = None
+        self._rendered_frames: tuple[Path, ...] = ()
+        self._render_worker_count = 0
+        self._render_elapsed = 0.0
 
     @property
     def frames(self) -> tuple[FrameT, ...]:
@@ -110,8 +101,56 @@ class ParallelAnimation(Generic[FrameT]):
                 )
 
         return self._frames
+    def _clear_render(self) -> None:
+        if self._temporary_directory is not None:
+            self._temporary_directory.cleanup()
 
-    def save(self, output_path: str | Path, *, writer: Any | None = None, **writer_options: Any) -> SaveResult:
+        self._temporary_directory = None
+        self._rendered_frames = ()
+        self._render_worker_count = 0
+        self._render_elapsed = 0.0
+    
+    def render(self, dpi: int, worker_count: int = 0, temp_root: Path | None = None) -> AnimationResult:
+        self._clear_render()
+        frames = self.frames
+        config = RenderConfig(dpi, worker_count, temp_root)
+
+        chunk_count = config.workers
+
+        temporary_directory = TemporaryDirectory(None, "par_anim_", config.temp_root)
+
+        self._temporary_directory = temporary_directory
+        tmp_dir = Path(temporary_directory.name)
+
+        job = AnimationJob(self._init_func, self._func, self._finalize_func, config)
+
+        chunks = self._partition_frames(frames, chunk_count, tmp_dir)
+
+        started_at = time.perf_counter()
+
+        try:
+            self._render_chunks(job, chunks, worker_count)
+
+        except BaseException:
+            self._clear_render()
+            raise
+
+        self._render_elapsed = time.perf_counter() - started_at
+        self._render_worker_count = worker_count
+
+        self._rendered_frames = tuple(
+            tmp_dir / f"frame_{index:08d}.png"
+            for index in range(len(frames))
+        )
+        
+        return AnimationResult(
+            Path(temporary_directory.name),
+            len(self.frames),
+            self._render_worker_count,
+            self._render_elapsed,
+        )
+    
+    def save(self, output_path: str | Path, *, writer: Any | None = None, **writer_options: Any) -> AnimationResult:
         """
         Render the animation and save the combined output.
 
@@ -138,46 +177,35 @@ class ParallelAnimation(Generic[FrameT]):
         ValueError
             If no writer is registered for the output extension.
         """
+        if not self._rendered_frames:
+            raise RuntimeError(
+                "Animation has not been rendered. Call render() before save()."
+            )
+
+        if self._temporary_directory is None:
+            raise RuntimeError("Rendered frame data is unavailable.")
+
         output_path = Path(output_path).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         selected_writer = self._resolve_writer(output_path, writer, writer_options)
 
-        frames = self.frames
-        worker_count = (
-            min(self.config.workers, len(frames))
-            if selected_writer.supports_parallel
-            else 1
-        )
-
-        job = AnimationJob(self._init_func, self._func, self._finalize_func, selected_writer)
-
-        started_at = time.perf_counter()
         staging_path = self._create_staging_path(output_path)
+        tmp_dir = Path(self._temporary_directory.name)
 
         try:
-            with TemporaryDirectory(None, "par_anim_",self.config.temp_root) as temporary_directory:
-                tmp_dir = Path(temporary_directory)
-                chunk_suffix = selected_writer.chunk_suffix
-                
-                chunks = self._partition_frames(frames, worker_count, tmp_dir, chunk_suffix)
-
-                rendered_chunks = self._render_chunks(job, chunks, worker_count)
-
-                chunk_paths = [ chunk_path for _, chunk_path in rendered_chunks]
-                
-                selected_writer.combine_chunks(chunk_paths, staging_path, tmp_dir)
-
-            # The requested output is touched only after rendering and
-            # concatenation have completed successfully.
+            selected_writer.save_frames(self._rendered_frames, staging_path, tmp_dir)
             os.replace(staging_path, output_path)
 
         finally:
             staging_path.unlink(missing_ok=True)
 
-        elapsed = time.perf_counter() - started_at
-        
-        return SaveResult(output_path, len(frames), worker_count, elapsed)
+        return AnimationResult(
+            output_path,
+            len(self.frames),
+            self._render_worker_count,
+            self._render_elapsed,
+        )
 
     def _resolve_writer(self, 
         output_path: Path, 
@@ -220,97 +248,80 @@ class ParallelAnimation(Generic[FrameT]):
             "provide writer= explicitly"
         ) 
 
-    def _partition_frames(self,
+    def _partition_frames(
+        self,
         frames: tuple[FrameT, ...],
-        worker_count: int,
+        chunk_count: int,
         temporary_directory: Path,
-        chunk_suffix: str,
     ) -> list[RenderChunk[FrameT]]:
-        """
-        Divide frames into approximately equal contiguous worker chunks.
-
-        Parameters
-        ----------
-        frames : tuple[FrameT, ...]
-            Frames to partition.
-        worker_count : int
-            Number of chunks to create.
-        temporary_directory : Path
-            Directory for chunk output files.
-        chunk_suffix : str
-            File suffix used for each chunk.
-
-        Returns
-        -------
-        list[RenderChunk[FrameT]]
-            Ordered render chunks with frame subsets and output paths.
-        """
-        
-        quotient, remainder = divmod(len(frames), worker_count)
+        quotient, remainder = divmod(len(frames), chunk_count)
 
         chunks: list[RenderChunk[FrameT]] = []
         begin = 0
 
-        for index in range(worker_count):
+        for index in range(chunk_count):
             size = quotient + (index < remainder)
             end = begin + size
-            output_path = temporary_directory / f"chunk_{index:04d}{chunk_suffix}"
-            chunks.append(RenderChunk(index, frames[begin:end], output_path))
+
+            chunks.append(
+                RenderChunk(
+                    index,
+                    begin,
+                    frames[begin:end],
+                    temporary_directory,
+                )
+            )
 
             begin = end
 
         return chunks
 
-    def _render_chunks(self,
+    def _render_chunks(
+        self,
         job: AnimationJob[FrameT],
         chunks: list[RenderChunk[FrameT]],
         worker_count: int,
-    ) -> list[tuple[int, Path]]:
-        """
-        Render all frame chunks locally or with worker processes.
-
-        Parameters
-        ----------
-        job : AnimationJob[FrameT]
-            Scene callbacks and writer configuration for each worker.
-        chunks : list[RenderChunk[FrameT]]
-            Frame chunks to render.
-        worker_count : int
-            Number of worker processes.
-
-        Returns
-        -------
-        list[tuple[int, Path]]
-            ``(chunk_index, output_path)`` pairs for completed chunks.
-
-        Raises
-        ------
-        BaseException
-            Re-raises worker failures after cancelling unfinished futures.
-        """
+    ) -> list[int]:
         total_frames = sum(len(chunk.frames) for chunk in chunks)
-        
+
         if worker_count == 1:
             progress = _LocalProgress(total_frames)
-            return [render_animation_chunk(job, chunks[0], progress)]
+
+            return [
+                render_animation_chunk(job, chunk, progress)
+                for chunk in chunks
+            ]
 
         context = get_context("spawn")
-        
+
         with context.Manager() as manager:
             progress_queue = manager.Queue()
 
-            with ProcessPoolExecutor(worker_count, context) as executor:
+            with ProcessPoolExecutor(
+                max_workers=worker_count,
+                mp_context=context,
+            ) as executor:
                 futures = [
-                    executor.submit(render_animation_chunk, job, chunk, progress_queue)
+                    executor.submit(
+                        render_animation_chunk,
+                        job,
+                        chunk,
+                        progress_queue,
+                    )
                     for chunk in chunks
                 ]
 
                 try:
-                    return wait_for_workers(futures, progress_queue, total_frames)
+                    return wait_for_workers(
+                        futures,
+                        progress_queue,
+                        total_frames,
+                    )
 
                 except BaseException:
                     for future in futures:
                         future.cancel()
+
                     raise
             
 

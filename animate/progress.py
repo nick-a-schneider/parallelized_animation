@@ -63,7 +63,8 @@ class _LocalProgress:
         self.completed = 0
         self.started_at = time.perf_counter()
 
-    def put(self, amount: int) -> None:
+
+    def put(self, item: int) -> None:
         """
         Record completed frames and update the displayed progress.
 
@@ -72,7 +73,7 @@ class _LocalProgress:
         amount : int
             Number of newly completed frames.
         """
-        self.completed += amount
+        self.completed += item
         elapsed = time.perf_counter() - self.started_at
         print_status(self.completed, self.total_frames, elapsed)
         if self.completed >= self.total_frames:

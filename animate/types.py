@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 
 from pathlib import Path
-from typing import Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, Protocol
 
 ##################################################
 from .scene import AnimationScene
@@ -14,23 +14,25 @@ from .writers.base_writer import AnimationWriter
 FrameT = TypeVar("FrameT")
 
 @dataclass(frozen=True)
-class ParallelConfig:
+class RenderConfig:
     """
     Configure parallel animation rendering.
 
     Parameters
     ----------
+    dpi: int
     workers : int, optional
         Maximum number of worker processes. Defaults to at most four CPUs.
     temp_root : Path | None, optional
         Parent directory for temporary render files.
     """
-    workers: int = min(4, os.cpu_count() or 1)
+    dpi: int
+    workers: int = 0
     temp_root: Path | None = None
 
     def __post_init__(self) -> None:
         if self.workers < 1:
-            raise ValueError("workers must be at least 1")
+            object.__setattr__(self, "workers", min(4, os.cpu_count() or 1))
 
         if self.temp_root is not None:
             object.__setattr__(self, "temp_root", Path(self.temp_root))
@@ -43,27 +45,26 @@ class RenderChunk(Generic[FrameT]):
 
     Parameters
     ----------
-    index : int
-        Chunk index used to restore output order.
+    index : int TODO
+    start:  int TODO
     frames : tuple[FrameT, ...]
         Frames assigned to the chunk.
     output_path : Path
         Intermediate file written for the chunk.
     """
     index: int
+    start: int
     frames: tuple[FrameT, ...]
-    output_path: Path
-
+    output_directory: Path
 
 @dataclass(frozen=True)
-class SaveResult:
+class AnimationResult:
     """
-    Summarize a completed animation save operation.
+    Summarize a completed animation operation.
 
     Parameters
     ----------
     output_path : Path
-        Final saved output path.
     frame_count : int
         Number of rendered frames.
     worker_count : int
@@ -105,11 +106,22 @@ class AnimationJob(Generic[FrameT]):
         Updates the scene for one frame.
     finalize_func : Callable[[AnimationScene], None] | None
         Optional callback run after a worker finishes rendering.
-    writer : AnimationWriter
-        Writer used to encode rendered frames.
+    config: RenderConfig
+        TODO
     """
-
     init_func: Callable[[], AnimationScene]
     func: Callable[[FrameT, AnimationScene], None]
     finalize_func: Callable[[AnimationScene], None] | None
-    writer: AnimationWriter
+    config: RenderConfig
+
+
+class ProgressSink(Protocol):
+    def put(self, item: int, /) -> Any:
+        ...
+
+class ProgressQueue(ProgressSink, Protocol):
+    def get(self, block: bool = True, timeout: float | None = None) -> int:
+        ...
+
+    def get_nowait(self) -> int:
+        ...

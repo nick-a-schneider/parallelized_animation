@@ -1,3 +1,3 @@
 from .parallel_animation import ParallelAnimation
 from .scene import AnimationScene
-from .types import ParallelConfig
+from .types import RenderConfig
