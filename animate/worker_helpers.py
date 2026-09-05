@@ -4,14 +4,13 @@ import time
 import queue
 
 from concurrent.futures import Future
-from pathlib import Path
-from typing import Any, Callable, Sequence, Protocol
+from typing import Callable, Sequence
 
 import matplotlib.pyplot as plt
 
 ##################################################
 from .scene import AnimationScene
-from .progress import _LocalProgress, print_status
+from .progress import print_status
 from .types import FrameT, RenderChunk, AnimationJob, ProgressSink, ProgressQueue
 
         

@@ -8,7 +8,6 @@ from typing import Any, Callable, Generic, TypeVar, Protocol
 
 ##################################################
 from .scene import AnimationScene
-from .writers.base_writer import AnimationWriter
 
 
 FrameT = TypeVar("FrameT")

@@ -1,5 +1,3 @@
-# pdf_writer.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,12 +12,7 @@ from .base_writer import AnimationWriter
 @dataclass(frozen=True)
 class PdfWriter(AnimationWriter):
 
-    def save_frames(
-        self,
-        frame_paths: Sequence[Path],
-        output_path: Path,
-        temporary_directory: Path,
-    ) -> None:
+    def save_frames(self, frame_paths: Sequence[Path], output_path: Path, temporary_directory: Path) -> None:
         if not frame_paths:
             raise ValueError("Cannot save an animation with no rendered frames")
 
@@ -32,12 +25,7 @@ class PdfWriter(AnimationWriter):
 
             first, *rest = images
 
-            first.save(
-                output_path,
-                format="PDF",
-                save_all=True,
-                append_images=rest,
-            )
+            first.save(output_path, format="PDF", save_all=True, append_images=rest)
 
         finally:
             for image in images:

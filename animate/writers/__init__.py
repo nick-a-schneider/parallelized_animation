@@ -1,5 +1,6 @@
 from .mp4_writer import Mp4Writer
 from .pdf_writer import PdfWriter
+from .gif_writer import GifWriter
 from .base_writer import AnimationWriter
 
 from dataclasses import fields
@@ -7,7 +8,8 @@ from typing import Any, TypeVar, cast
 
 WRITERS: dict[str, type[AnimationWriter]] = {
     '.mp4' : Mp4Writer,
-    '.pdf': PdfWriter # broken :(
+    '.pdf': PdfWriter,
+    '.gif': GifWriter
 }
 
 W = TypeVar("W", bound=AnimationWriter)

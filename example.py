@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 
-from animate import AnimationScene, ParallelAnimation, RenderConfig
+from animate import AnimationScene, ParallelAnimation
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class WaveData:
 
 
 # Precompute all animation data.
-frames = 24
+frames = 500
 x = np.linspace(0.0, 2.0 * np.pi, 600)
 phase = 2.0 * np.pi * np.arange(frames) / frames
 
@@ -61,10 +61,9 @@ def main() -> None:
         init_func=initialize_wave,
         func=update_wave
     )
-    render_res = animation.render(dpi=90, worker_count=2)
-    print(render_res)
-    
-    save_res = animation.save(Path("wave.pdf"), fps=12)
+    render = animation.render(dpi=300, worker_count=4)
+    print(render)
+    save_res = render.save(Path("wave.gif"), fps=12)
     # print(save_res)
 
 
