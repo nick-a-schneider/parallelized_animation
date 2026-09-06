@@ -19,6 +19,7 @@ from .writers import AnimationWriter, make_writer, WRITERS
 class AnimationRender:
     _temporary_directory: TemporaryDirectory
     frame_paths: tuple[Path, ...]
+    shape: tuple[int, int]
     frame_count: int
     worker_count: int
     elapsed_seconds: float
@@ -74,7 +75,7 @@ class AnimationRender:
         tmp_dir = Path(self._temporary_directory.name)
 
         try:
-            selected_writer.save_frames(self.frame_paths, staging_path, tmp_dir)
+            selected_writer.save_frames(self.frame_paths, staging_path, tmp_dir, self.shape)
             os.replace(staging_path, output_path)
 
         finally:

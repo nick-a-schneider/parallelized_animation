@@ -25,7 +25,7 @@ class GifWriter(AnimationWriter):
                 f"{self.ffmpeg!r}"
             )
 
-    def save_frames(self, frame_paths: Sequence[Path], output_path: Path, temporary_directory: Path) -> None:
+    def save_frames(self, frame_paths: Sequence[Path], output_path: Path, temporary_directory: Path, shape: tuple[int, int]) -> None:
         if not frame_paths:
             raise ValueError(
                 "Cannot save an animation with no rendered frames"

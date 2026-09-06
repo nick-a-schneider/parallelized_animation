@@ -7,12 +7,20 @@ from concurrent.futures import Future
 from typing import Callable, Sequence
 
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 ##################################################
 from .scene import AnimationScene
 from .progress import print_status
 from .types import FrameT, RenderChunk, AnimationJob, ProgressSink, ProgressQueue
 
+def get_frame_size(scene: AnimationScene, dpi: int) -> tuple[int, int]:
+        scene.figure.set_dpi(dpi)
+        canvas = FigureCanvasAgg(scene.figure)
+        canvas.draw()
+        width, height = canvas.get_width_height()
+        plt.close(scene.figure)
+        return width, height
         
 def finalize_animation_scene(
     scene: AnimationScene,
@@ -102,14 +110,34 @@ def render_animation_chunk(
 
     try:
         scene = job.init_func()
+        figure = scene.figure
+        figure.set_dpi(job.config.dpi)
+        canvas = FigureCanvasAgg(figure)
+        artists = tuple(scene.artists.values())
+        
+        for artist in artists:
+            artist.set_animated(True)
+
+        canvas.draw()
+        background = canvas.copy_from_bbox(figure.bbox)
 
         for offset, frame in enumerate(chunk.frames):
             frame_index = chunk.start + offset
-            frame_path = chunk.output_directory / f"frame_{frame_index:08d}.png"
+            frame_path = chunk.output_directory / f"frame_{frame_index:08d}.rgba"
 
             job.func(frame, scene)
+            
+            canvas.restore_region(background)
 
-            scene.figure.savefig(frame_path, format="png", dpi=job.config.dpi)
+            for artist in artists:
+                if artist.axes is not None:
+                    artist.axes.draw_artist(artist)
+                else:
+                    figure.draw_artist(artist)
+                    
+            canvas.blit(figure.bbox)
+            with frame_path.open("wb") as stream:
+                stream.write(memoryview(canvas.buffer_rgba()))
 
             progress.put(1)
 
@@ -165,7 +193,7 @@ def wait_for_workers(
             try:
                 completed_frames += progress_queue.get(timeout=0.1)
                 elapsed = time.perf_counter() - started_at
-                print_status(completed_frames, total_frames, elapsed)
+                print_status("Rendering frame", completed_frames, total_frames, elapsed)
 
             except queue.Empty:
                 pass
@@ -187,7 +215,7 @@ def wait_for_workers(
                 break
 
         elapsed=time.perf_counter() - started_at
-        print_status(completed_frames, total_frames, elapsed)
+        print_status("Rendering frame", completed_frames, total_frames, elapsed)
 
     finally:
         print()

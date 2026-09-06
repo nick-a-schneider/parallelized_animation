@@ -12,7 +12,7 @@ from .base_writer import AnimationWriter
 @dataclass(frozen=True)
 class PdfWriter(AnimationWriter):
 
-    def save_frames(self, frame_paths: Sequence[Path], output_path: Path, temporary_directory: Path) -> None:
+    def save_frames(self, frame_paths: Sequence[Path], output_path: Path, temporary_directory: Path, shape: tuple[int, int]) -> None:
         if not frame_paths:
             raise ValueError("Cannot save an animation with no rendered frames")
 

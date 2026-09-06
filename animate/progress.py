@@ -24,7 +24,7 @@ def format_duration(seconds: float) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def print_status(completed: int, total_frames: int, elapsed: float) -> None:
+def print_status(title: str, completed: int, total_frames: int, elapsed: float) -> None:
     """
     Print the current rendering progress on a single terminal line.
 
@@ -41,7 +41,7 @@ def print_status(completed: int, total_frames: int, elapsed: float) -> None:
     rate = completed / elapsed if elapsed > 0.0 else 0.0
 
     print(
-        f"\rRendering frame {completed}/{total_frames} "
+        f"\r{title} {completed}/{total_frames} "
         f"({percent:5.1f}%) | "
         f"elapsed {format_duration(elapsed)} | "
         f"{rate:5.2f} frames/s",
@@ -75,6 +75,6 @@ class _LocalProgress:
         """
         self.completed += item
         elapsed = time.perf_counter() - self.started_at
-        print_status(self.completed, self.total_frames, elapsed)
+        print_status("Rendering frame", self.completed, self.total_frames, elapsed)
         if self.completed >= self.total_frames:
             print()

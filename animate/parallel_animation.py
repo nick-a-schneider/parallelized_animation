@@ -11,7 +11,7 @@ from typing import Callable, Generic, Iterable
 ##################################################
 from .scene import AnimationScene
 from .progress import _LocalProgress
-from .worker_helpers import render_animation_chunk, wait_for_workers
+from .worker_helpers import render_animation_chunk, wait_for_workers, get_frame_size
 from .types import FrameT, RenderConfig, RenderChunk, AnimationJob
 from .render import AnimationRender
 
@@ -93,7 +93,6 @@ class ParallelAnimation(Generic[FrameT]):
 
         return self._frames
     
-    
     def render(self, dpi: int, worker_count: int = 0, temp_root: Path | None = None) -> AnimationRender:
   
         frames = self.frames
@@ -107,7 +106,7 @@ class ParallelAnimation(Generic[FrameT]):
         tmp_dir = Path(temporary_directory.name)
 
         job = AnimationJob(self._init_func, self._func, self._finalize_func, config)
-
+    
         chunks = self._partition_frames(frames, chunk_count, tmp_dir)
 
         started_at = time.perf_counter()
@@ -118,13 +117,15 @@ class ParallelAnimation(Generic[FrameT]):
             if temporary_directory is not None:
                 temporary_directory.cleanup()
             raise
-
+        
+        
         return AnimationRender(
             temporary_directory,
             tuple(
-                tmp_dir / f"frame_{index:08d}.png"
+                tmp_dir / f"frame_{index:08d}.rgba"
                 for index in range(frame_count)
             ),
+            get_frame_size(self._init_func(), config.dpi),
             frame_count,
             config.workers,
             time.perf_counter() - started_at

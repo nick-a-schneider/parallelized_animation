@@ -54,7 +54,8 @@ The frame callback only selects the appropriate row:
 
 ```python
 def update_wave(frame: int, scene: AnimationScene) -> None:
-    scene.artists["wave"].set_ydata(y[frame])
+    wave = cast(Line2D, scene.artists["wave"])
+    wave.set_ydata(DATA.y[frame])
 ```
 
 This separation is intentional: the numerical work happens before rendering, while `ParallelAnimation` handles visualization and encoding.
@@ -63,19 +64,16 @@ This separation is intentional: the numerical work happens before rendering, whi
 
 ```python
 animation = ParallelAnimation(
-    frames=range(frames),
-    init_func=initialize_wave,
-    func=update_wave,
-    config=ParallelConfig(workers=2),
-)
+        frames=range(frames),
+        init_func=initialize_wave,
+        func=update_wave
+    )
 
-result = animation.save(
-    "wave.mp4",
-    fps=12,
-    dpi=90,
-)
+render = animation.render(dpi=300, worker_count=4)
+print(render)
 
-print(result)
+render.save(Path("wave.mp4"), fps=12)
+
 ```
 
 Frames are divided into contiguous chunks and rendered by separate processes. Each worker reuses one `AnimationScene` for its assigned frames, and the resulting chunk files are combined into the final output.

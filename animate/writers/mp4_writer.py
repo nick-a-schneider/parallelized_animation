@@ -6,8 +6,11 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+import threading
+import time
 
 from .base_writer import AnimationWriter
+from ..progress import print_status
 
 
 @dataclass(frozen=True)
@@ -34,22 +37,32 @@ class Mp4Writer(AnimationWriter):
                 f"{self.ffmpeg!r}"
             )
 
-    def save_frames(self, frame_paths: Sequence[Path], output_path: Path, temporary_directory: Path) -> None:
+    def save_frames(
+        self,
+        frame_paths: Sequence[Path],
+        output_path: Path,
+        temporary_directory: Path,
+        shape: tuple[int, int],
+    ) -> None:
         if not frame_paths:
             raise ValueError("Cannot save an animation with no rendered frames")
 
-        input_pattern = temporary_directory / "frame_%08d.png"
+        width, height = shape
 
         command = [
             self.ffmpeg,
             "-y",
             "-loglevel", "error",
+            "-progress", "pipe:1",
+            "-stats_period", "0.25",
+            "-nostats",
 
+            "-f", "rawvideo",
+            "-pixel_format", "rgba",
+            "-video_size", f"{width}x{height}",
             "-framerate", str(self.fps),
-            "-start_number", "0",
-            "-i", str(input_pattern),
+            "-i", "-",
 
-            "-frames:v", str(len(frame_paths)),
             "-an",
             "-c:v", "libx264",
             "-preset", self.preset,
@@ -61,15 +74,75 @@ class Mp4Writer(AnimationWriter):
             str(output_path),
         ]
 
-        process = subprocess.run(
+        process = subprocess.Popen(
             command,
-            stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
         )
 
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"FFmpeg failed while writing "
-                f"{output_path}:\n{process.stderr.strip()}"
+        if process.stdin is None:
+            raise RuntimeError("FFmpeg stdin was not created")
+
+        started_at = time.perf_counter()
+        
+        def read_progress() -> None:
+            if process.stdout is None:
+                return
+
+            for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+
+                key, _, value = line.partition("=")
+
+                if key == "frame":
+                    completed = int(value)
+                    elapsed = time.perf_counter() - started_at
+
+                    print_status("compiling mp4", completed, len(frame_paths), elapsed)
+            
+        progress_thread = threading.Thread(
+            target=read_progress,
+            daemon=False,
+        )
+        progress_thread.start()
+
+        try:
+            for frame_path in frame_paths:
+                with frame_path.open("rb") as frame:
+                    shutil.copyfileobj(frame, process.stdin)
+
+            process.stdin.close()
+
+            stderr = (
+                process.stderr.read().decode("utf-8", errors="replace")
+                if process.stderr is not None
+                else ""
             )
+
+            return_code = process.wait()
+
+            if return_code != 0:
+                raise RuntimeError(
+                    f"FFmpeg failed while writing {output_path}:\n"
+                    f"{stderr.strip()}"
+                )
+
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+
+            process.wait()
+            raise
+
+        finally:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+
+            if process.stdout is not None:
+                process.stdout.close()
+
+            if process.stderr is not None:
+                process.stderr.close()
+
+            progress_thread.join()
