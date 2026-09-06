@@ -16,11 +16,13 @@ class PdfWriter(AnimationWriter):
         if not frame_paths:
             raise ValueError("Cannot save an animation with no rendered frames")
 
+        width, height = shape
         images: list[Image.Image] = []
 
         try:
             for frame_path in frame_paths:
-                image = Image.open(frame_path).convert("RGB")
+                frame = frame_path.read_bytes()
+                image = Image.frombytes("RGBA", (width, height), frame).convert("RGB")
                 images.append(image)
 
             first, *rest = images

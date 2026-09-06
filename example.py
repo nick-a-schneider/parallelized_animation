@@ -61,9 +61,9 @@ def main() -> None:
         init_func=initialize_wave,
         func=update_wave
     )
-    render = animation.render(dpi=300, worker_count=6)
+    render = animation.render(dpi=300)
     print(render)
-    save_res = render.save(Path("wave.mp4"), fps=250, ffmpeg_threads=4)
+    save_res = render.save(Path("wave.gif"), fps=250, ffmpeg_threads=4)
     # print(save_res)
 
 

@@ -30,8 +30,9 @@ class RenderConfig:
     temp_root: Path | None = None
 
     def __post_init__(self) -> None:
-        if self.workers < 1:
-            object.__setattr__(self, "workers", min(4, os.cpu_count() or 1))
+        cpu_count = os.cpu_count() or 1
+        if self.workers < 1 or cpu_count < self.workers:
+            object.__setattr__(self, "workers", cpu_count)
 
         if self.temp_root is not None:
             object.__setattr__(self, "temp_root", Path(self.temp_root))
@@ -88,7 +89,7 @@ class AnimationResult:
             f"Saved {self.frame_count:,} frames to {self.output_path}\n"
             f"Workers: {self.worker_count}\n"
             f"Elapsed: {self.elapsed_seconds:.2f} s\n"
-            f"Render rate: {self.frames_per_second:.2f} frames/s"
+            f"Rate: {self.frames_per_second:.2f} frames/s"
         )
 
 
