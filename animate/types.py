@@ -8,6 +8,7 @@ from typing import Any, Callable, Generic, TypeVar, Protocol
 
 ##################################################
 from .scene import AnimationScene
+from .writers.mp4_writer import Mp4Writer
 
 
 FrameT = TypeVar("FrameT")
@@ -113,6 +114,7 @@ class AnimationJob(Generic[FrameT]):
     func: Callable[[FrameT, AnimationScene], None]
     finalize_func: Callable[[AnimationScene], None] | None
     config: RenderConfig
+    writer: Mp4Writer
 
 
 class ProgressSink(Protocol):

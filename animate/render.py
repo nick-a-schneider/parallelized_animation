@@ -2,27 +2,22 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-
 from pathlib import Path
-from tempfile import TemporaryDirectory
-
-import os
 from tempfile import TemporaryDirectory, mkstemp
 
-from pathlib import Path
-from typing import Any
 ##################################################
-from .types import  AnimationResult
-from .writers import AnimationWriter, make_writer, WRITERS
+from .types import AnimationResult
+from .writers import Mp4Writer
 
 @dataclass
 class AnimationRender:
     _temporary_directory: TemporaryDirectory
-    frame_paths: tuple[Path, ...]
+    chunk_paths: tuple[Path, ...]
     shape: tuple[int, int]
     frame_count: int
     worker_count: int
     elapsed_seconds: float
+    _writer: Mp4Writer
 
     @property
     def temporary_directory(self) -> Path:
@@ -35,47 +30,44 @@ class AnimationRender:
 
         return self.frame_count / self.elapsed_seconds
     
-    def save(self, output_path: str | Path, *, writer: Any | None = None, **writer_options: Any) -> AnimationResult:
+    def save(self, output_path: str | Path) -> AnimationResult:
         """
         Render the animation and save the combined output.
 
-        The writer is inferred from the output extension unless explicitly
-        provided. Rendering occurs in temporary chunk files and the requested
-        output path is replaced only after successful completion.
+        Worker-rendered MP4 chunks are concatenated without re-encoding. Only
+        MP4 output is supported; other formats can be generated from the saved
+        MP4 with separate conversion tools.
 
         Parameters
         ----------
         output_path : str | Path
             Destination file path.
-        writer : AnimationWriter | None, optional
-            Explicit writer. If omitted, one is selected from ``WRITERS``.
-        **writer_options : Any
-            Options passed to the inferred writer factory.
 
         Returns
         -------
-        SaveResult
+        AnimationResult
             Output path, frame count, worker count, and elapsed render time.
 
         Raises
         ------
         ValueError
-            If no writer is registered for the output extension.
+            If the output path does not have an MP4 extension.
         """
 
         if self._temporary_directory is None:
-            raise RuntimeError("Rendered frame data is unavailable.")
+            raise RuntimeError("Rendered MP4 chunks are unavailable.")
 
         output_path = Path(output_path).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() != ".mp4":
+            raise ValueError("Only MP4 output is supported")
 
-        selected_writer = self._resolve_writer(output_path, writer, writer_options)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         staging_path = self._create_staging_path(output_path)
         tmp_dir = Path(self._temporary_directory.name)
 
         try:
-            selected_writer.save_frames(self.frame_paths, staging_path, tmp_dir, self.shape)
+            self._writer.save_chunks(self.chunk_paths, staging_path, tmp_dir)
             os.replace(staging_path, output_path)
 
         finally:
@@ -87,43 +79,6 @@ class AnimationRender:
             self.worker_count,
             self.elapsed_seconds
         )
-    
-    def _resolve_writer(self, output_path: Path, writer: AnimationWriter | None, writer_options: dict[str, Any])-> AnimationWriter:
-        """
-        Select an explicit writer or construct one from the file extension.
-
-        Parameters
-        ----------
-        output_path : Path
-            Destination path used for extension inference.
-        writer : AnimationWriter | None
-            Explicit writer, or ``None`` to infer one.
-        writer_options : dict[str, Any]
-            Options passed to the inferred writer factory.
-
-        Returns
-        -------
-        AnimationWriter
-            Writer used for rendering and chunk combination.
-
-        Raises
-        ------
-        ValueError
-            If no writer is registered for the output extension.
-        """
-        
-        if writer is not None:
-            return writer
-
-        extension = output_path.suffix.lower()
-        
-        if extension in WRITERS:
-            return make_writer(WRITERS[extension], **writer_options)
-        
-        raise ValueError(
-            f"No default writer for output extension {extension!r}; "
-            "provide writer= explicitly"
-        ) 
         
     @staticmethod
     def _create_staging_path(output_path: Path) -> Path:

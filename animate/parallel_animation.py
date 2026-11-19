@@ -14,6 +14,7 @@ from .progress import _LocalProgress
 from .worker_helpers import render_animation_chunk, wait_for_workers, get_frame_size
 from .types import FrameT, RenderConfig, RenderChunk, AnimationJob
 from .render import AnimationRender
+from .writers import Mp4Writer
 
 class ParallelAnimation(Generic[FrameT]):
     """
@@ -93,42 +94,52 @@ class ParallelAnimation(Generic[FrameT]):
 
         return self._frames
     
-    def render(self, dpi: int, worker_count: int = 0, temp_root: Path | None = None) -> AnimationRender:
+    def render(
+        self,
+        dpi: int,
+        worker_count: int = 1,
+        temp_root: Path | None = None,
+        *,
+        fps: int = 10,
+        ffmpeg: str = "ffmpeg",
+        ffmpeg_threads: int = 1,
+        crf: int = 18,
+        preset: str = "ultrafast",
+    ) -> AnimationRender:
   
         frames = self.frames
         frame_count = len(frames)
         config = RenderConfig(dpi, worker_count, temp_root)
+        writer = Mp4Writer(fps, ffmpeg, ffmpeg_threads, crf, preset)
 
-        chunk_count = config.workers
+        worker_count = min(config.workers, frame_count)
+        chunk_count = worker_count
 
         temporary_directory = TemporaryDirectory(None, "par_anim_", config.temp_root)
-        
         tmp_dir = Path(temporary_directory.name)
 
-        job = AnimationJob(self._init_func, self._func, self._finalize_func, config)
-    
+        job = AnimationJob(self._init_func, self._func, self._finalize_func, config, writer)
         chunks = self._partition_frames(frames, chunk_count, tmp_dir)
 
         started_at = time.perf_counter()
         try:
-            self._render_chunks(job, chunks, config.workers)
+            self._render_chunks(job, chunks, worker_count)
 
         except BaseException:
             if temporary_directory is not None:
                 temporary_directory.cleanup()
             raise
-        
-        
         return AnimationRender(
             temporary_directory,
             tuple(
-                tmp_dir / f"frame_{index:08d}.rgba"
-                for index in range(frame_count)
+                tmp_dir / f"chunk_{index:08d}.mp4"
+                for index in range(chunk_count)
             ),
             get_frame_size(self._init_func(), config.dpi),
             frame_count,
-            config.workers,
-            time.perf_counter() - started_at
+            worker_count,
+            time.perf_counter() - started_at,
+            writer,
         )
 
     def _partition_frames(self, frames: tuple[FrameT, ...], chunk_count: int, temporary_directory: Path) -> list[RenderChunk[FrameT]]:

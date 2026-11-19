@@ -69,14 +69,16 @@ animation = ParallelAnimation(
         func=update_wave
     )
 
-render = animation.render(dpi=300, worker_count=4)
+render = animation.render(dpi=300, worker_count=4, fps=12)
 print(render)
 
-render.save(Path("wave.mp4"), fps=12)
+render.save(Path("wave.mp4"))
 
 ```
 
-Frames are divided into contiguous chunks and rendered by separate processes. Each worker reuses one `AnimationScene` for its assigned frames, and the resulting chunk files are combined into the final output.
+Frames are divided into contiguous chunks and rendered by separate processes. Each worker reuses one `AnimationScene` for its assigned frames and streams them directly to FFmpeg, which writes a compressed MP4 chunk. `render()` accepts the MP4 encoding options (`fps`, `ffmpeg`, `ffmpeg_threads`, `crf`, and `preset`). `save()` concatenates the chunks into the final MP4 without re-encoding.
+
+The temporary directory contains one MP4 per worker rather than one uncompressed file per frame. The library currently writes MP4 only; convert the saved MP4 to PDF or GIF with separate scripts.
 
 ## Requirements
 

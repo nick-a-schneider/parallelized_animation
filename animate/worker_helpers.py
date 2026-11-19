@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 import queue
+import subprocess
+import sys
 
 from concurrent.futures import Future
 from typing import Callable, Sequence
@@ -79,12 +81,7 @@ def render_animation_chunk(
     progress: ProgressSink,
 ) -> int:
     """
-    Render one contiguous frame chunk to independent PNG files.
-
-    Creates one worker-local scene, renders each assigned frame to a
-    deterministically named PNG file, reports progress after each frame,
-    then finalizes the scene.
-
+    Render one contiguous frame chunk to a compressed MP4 file.
     Parameters
     ----------
     job : AnimationJob[FrameT]
@@ -105,28 +102,29 @@ def render_animation_chunk(
         Propagates initialization, rendering, writing, or cleanup failures.
     """
     
-    scene: AnimationScene | None = None
-    active_error: BaseException | None = None
+    scene = job.init_func()
 
     try:
-        scene = job.init_func()
         figure = scene.figure
         figure.set_dpi(job.config.dpi)
         canvas = FigureCanvasAgg(figure)
         artists = tuple(scene.artists.values())
-        
         for artist in artists:
             artist.set_animated(True)
 
         canvas.draw()
         background = canvas.copy_from_bbox(figure.bbox)
 
-        for offset, frame in enumerate(chunk.frames):
-            frame_index = chunk.start + offset
-            frame_path = chunk.output_directory / f"frame_{frame_index:08d}.rgba"
+        chunk_path = chunk.output_directory / f"chunk_{chunk.index:08d}.mp4"
+        command = job.writer.chunk_command(
+            chunk_path,
+            canvas.get_width_height(),
+        )
 
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+
+        for frame in chunk.frames:
             job.func(frame, scene)
-            
             canvas.restore_region(background)
 
             for artist in artists:
@@ -134,20 +132,17 @@ def render_animation_chunk(
                     artist.axes.draw_artist(artist)
                 else:
                     figure.draw_artist(artist)
-                    
             canvas.blit(figure.bbox)
-            with frame_path.open("wb") as stream:
-                stream.write(memoryview(canvas.buffer_rgba()))
-
+            process.stdin.write(memoryview(canvas.buffer_rgba()))
             progress.put(1)
 
-    except BaseException as error:
-        active_error = error
-        raise
+        process.stdin.close()
+
+        if process.wait() != 0:
+            raise RuntimeError(f"FFmpeg failed on chunk {chunk.index}")
 
     finally:
-        if scene is not None:
-            finalize_animation_scene(scene, job.finalize_func, active_error)
+        finalize_animation_scene(scene, job.finalize_func, sys.exc_info()[1])
 
     return chunk.index
 

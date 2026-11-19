@@ -2,19 +2,14 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
-import threading
-import time
-
-from .base_writer import AnimationWriter
-from ..progress import print_status
 
 
 @dataclass(frozen=True)
-class Mp4Writer(AnimationWriter):
+class Mp4Writer:
     fps: int = 10
     ffmpeg: str = "ffmpeg"
     ffmpeg_threads: int = 1
@@ -33,36 +28,21 @@ class Mp4Writer(AnimationWriter):
 
         if shutil.which(self.ffmpeg) is None:
             raise FileNotFoundError(
-                f"Could not find FFmpeg executable: "
-                f"{self.ffmpeg!r}"
+                f"Could not find FFmpeg executable: {self.ffmpeg!r}"
             )
 
-    def save_frames(
-        self,
-        frame_paths: Sequence[Path],
-        output_path: Path,
-        temporary_directory: Path,
-        shape: tuple[int, int],
-    ) -> None:
-        if not frame_paths:
-            raise ValueError("Cannot save an animation with no rendered frames")
-
+    def chunk_command(self, output_path: Path, shape: tuple[int, int]) -> list[str]:
         width, height = shape
 
-        command = [
+        return [
             self.ffmpeg,
             "-y",
             "-loglevel", "error",
-            "-progress", "pipe:1",
-            "-stats_period", "0.25",
-            "-nostats",
-
             "-f", "rawvideo",
             "-pixel_format", "rgba",
             "-video_size", f"{width}x{height}",
             "-framerate", str(self.fps),
             "-i", "-",
-
             "-an",
             "-c:v", "libx264",
             "-preset", self.preset,
@@ -70,79 +50,71 @@ class Mp4Writer(AnimationWriter):
             "-threads", str(self.ffmpeg_threads),
             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
             "-pix_fmt", "yuv420p",
-
             str(output_path),
         ]
 
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+    def save_chunks(self, chunk_paths: tuple[Path, ...], output_path: Path, temporary_directory: Path) -> None:
+        if not chunk_paths:
+            raise ValueError("Cannot save an animation with no rendered chunks")
 
-        if process.stdin is None:
-            raise RuntimeError("FFmpeg stdin was not created")
-
-        started_at = time.perf_counter()
-        
-        def read_progress() -> None:
-            if process.stdout is None:
-                return
-
-            for raw_line in process.stdout:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-
-                key, _, value = line.partition("=")
-
-                if key == "frame":
-                    completed = int(value)
-                    elapsed = time.perf_counter() - started_at
-
-                    print_status("compiling mp4", completed, len(frame_paths), elapsed)
-            
-        progress_thread = threading.Thread(
-            target=read_progress,
-            daemon=False,
-        )
-        progress_thread.start()
+        manifest_path: Path | None = None
 
         try:
-            for frame_path in frame_paths:
-                with frame_path.open("rb") as frame:
-                    shutil.copyfileobj(frame, process.stdin)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix="concat_",
+                suffix=".txt",
+                dir=temporary_directory,
+                delete=False,
+            ) as manifest:
+                manifest_path = Path(manifest.name)
 
-            process.stdin.close()
+                for index, chunk_path in enumerate(chunk_paths):
+                    if chunk_path.parent.resolve() != temporary_directory.resolve():
+                        raise ValueError(
+                            "MP4 chunks must be located in the render temporary directory"
+                        )
 
-            stderr = (
-                process.stderr.read().decode("utf-8", errors="replace")
-                if process.stderr is not None
-                else ""
+                    expected_name = f"chunk_{index:08d}.mp4"
+                    if chunk_path.name != expected_name:
+                        raise ValueError(
+                            f"Expected ordered MP4 chunk {expected_name!r}, "
+                            f"got {chunk_path.name!r}"
+                        )
+
+                    if not chunk_path.is_file():
+                        raise FileNotFoundError(
+                            f"Rendered MP4 chunk does not exist: {chunk_path}"
+                        )
+
+                    manifest.write(f"file {chunk_path.name}\n")
+
+            command = [
+                self.ffmpeg,
+                "-y",
+                "-loglevel", "error",
+                "-f", "concat",
+                "-safe", "1",
+                "-i", str(manifest_path),
+                "-map", "0:v:0",
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
             )
 
-            return_code = process.wait()
-
-            if return_code != 0:
+            if result.returncode != 0:
                 raise RuntimeError(
-                    f"FFmpeg failed while writing {output_path}:\n"
-                    f"{stderr.strip()}"
+                    f"FFmpeg failed while assembling {output_path}:\n"
+                    f"{result.stderr.strip()}"
                 )
 
-        except BaseException:
-            if process.poll() is None:
-                process.kill()
-
-            process.wait()
-            raise
-
         finally:
-            if process.stdin is not None and not process.stdin.closed:
-                process.stdin.close()
-
-            if process.stdout is not None:
-                process.stdout.close()
-
-            if process.stderr is not None:
-                process.stderr.close()
-
-            progress_thread.join()
+            if manifest_path is not None:
+                manifest_path.unlink(missing_ok=True)
